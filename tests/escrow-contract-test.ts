@@ -1,85 +1,69 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { MockProvider } from '@stacks/blockchain-api-client';
-import { callReadOnlyFunction, callContractFunction } from '@stacks/transactions';
+import { MockProvider } from '@clarity/clarity-js-sdk';
+import { getTxResult } from '@stacks/transactions';
 
 describe('Escrow Contract', () => {
-  let mockProvider: MockProvider;
+  let provider: MockProvider;
+  let deployer: string;
+  let bidder1: string;
+  let bidder2: string;
 
-  beforeEach(() => {
-    mockProvider = new MockProvider();
+  beforeEach(async () => {
+    provider = await MockProvider.fromProject('path/to/your/project');
+    [deployer, bidder1, bidder2] = provider.address;
+
+    await provider.mine([
+      provider.contractDeploy('escrow', 'escrow', deployer),
+    ]);
   });
 
-  it('should deposit funds successfully', async () => {
-    const result = await callContractFunction({
-      network: mockProvider.getNetwork(),
-      contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-      contractName: 'escrow',
-      functionName: 'deposit',
-      functionArgs: ['1', 'ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG', '1000'],
-      senderAddress: 'ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG',
-    });
+  it('should deposit funds into escrow', async () => {
+    const { result } = await provider.eval(
+      'escrow',
+      `(deposit u1 '${bidder1} u100)`,
+      bidder1
+    );
+    expect(getTxResult(result)).toEqual('(ok true)');
 
-    expect(result.success).toBe(true);
+    const escrowAmount = await provider.eval(
+      'escrow',
+      `(map-get escrow {auction-id: u1, bidder: '${bidder1}})`,
+      deployer
+    );
+    expect(getTxResult(escrowAmount)).toEqual('(some {amount: u100})');
   });
 
-  it('should withdraw funds successfully', async () => {
-    // First, deposit some funds
-    await callContractFunction({
-      network: mockProvider.getNetwork(),
-      contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-      contractName: 'escrow',
-      functionName: 'deposit',
-      functionArgs: ['1', 'ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG', '1000'],
-      senderAddress: 'ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG',
-    });
+  it('should withdraw funds from escrow', async () => {
+    // Deposit funds first
+    await provider.eval(
+      'escrow',
+      `(deposit u1 '${bidder1} u100)`,
+      bidder1
+    );
 
-    // Now, withdraw the funds
-    const result = await callContractFunction({
-      network: mockProvider.getNetwork(),
-      contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-      contractName: 'escrow',
-      functionName: 'withdraw',
-      functionArgs: ['1', 'ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG'],
-      senderAddress: 'ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG',
-    });
+    // Withdraw funds
+    const { result } = await provider.eval(
+      'escrow',
+      `(withdraw u1 '${bidder1})`,
+      bidder1
+    );
+    expect(getTxResult(result)).toEqual('(ok u100)');
 
-    expect(result.success).toBe(true);
-    expect(result.value).toBe('1000');
+    // Check that escrow is empty
+    const escrowAmount = await provider.eval(
+      'escrow',
+      `(map-get escrow {auction-id: u1, bidder: '${bidder1}})`,
+      deployer
+    );
+    expect(getTxResult(escrowAmount)).toEqual('none');
   });
 
-  it('should fail to withdraw non-existent funds', async () => {
-    const result = await callContractFunction({
-      network: mockProvider.getNetwork(),
-      contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-      contractName: 'escrow',
-      functionName: 'withdraw',
-      functionArgs: ['2', 'ST3AM1A56AK2C1XAFJ4115ZSV26EB49BVQ10MGCS0'],
-      senderAddress: 'ST3AM1A56AK2C1XAFJ4115ZSV26EB49BVQ10MGCS0',
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.error).toBe('u200');
-  });
-
-  it('should return correct escrow amount', async () => {
-    // First, deposit some funds
-    await callContractFunction({
-      network: mockProvider.getNetwork(),
-      contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-      contractName: 'escrow',
-      functionName: 'deposit',
-      functionArgs: ['1', 'ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG', '1000'],
-      senderAddress: 'ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG',
-    });
-
-    const result = await callReadOnlyFunction({
-      network: mockProvider.getNetwork(),
-      contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-      contractName: 'escrow',
-      functionName: 'get-escrow-amount',
-      functionArgs: ['1', 'ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG'],
-    });
-
-    expect(result).toBe('1000');
+  it('should fail to withdraw when no funds are in escrow', async () => {
+    const { result } = await provider.eval(
+      'escrow',
+      `(withdraw u1 '${bidder2})`,
+      bidder2
+    );
+    expect(getTxResult(result)).toEqual('(err u200)');
   });
 });
