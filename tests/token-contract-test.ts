@@ -1,52 +1,84 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { MockProvider } from '@stacks/blockchain-api-client';
-import { callReadOnlyFunction, callContractFunction } from '@stacks/transactions';
+import { MockProvider } from '@clarity/clarity-js-sdk';
+import { getTxResult } from '@stacks/transactions';
 
-describe('NFT Auction Contract', () => {
-  let mockProvider: MockProvider;
+describe('Fungible Token Contract', () => {
+  let provider: MockProvider;
+  let deployer: string;
+  let user1: string;
+  let user2: string;
 
-  beforeEach(() => {
-    mockProvider = new MockProvider();
+  beforeEach(async () => {
+    provider = await MockProvider.fromProject('path/to/your/project');
+    [deployer, user1, user2] = provider.address;
+
+    await provider.mine([
+      provider.contractDeploy('fungible-token', 'fungible-token', deployer),
+    ]);
   });
 
-  it('should create an auction for an owned NFT', async () => {
-    // First, mint an NFT
-    await callContractFunction({
-      network: mockProvider.getNetwork(),
-      contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-      contractName: 'nft-marketplace',
-      functionName: 'mint-nft',
-      functionArgs: ['1'],
-      senderAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-    });
+  it('should mint tokens', async () => {
+    const { result } = await provider.eval(
+      'fungible-token',
+      `(mint-tokens '${user1} u100)`,
+      deployer
+    );
+    expect(getTxResult(result)).toEqual('(ok true)');
 
-    // Now, create an auction
-    const result = await callContractFunction({
-      network: mockProvider.getNetwork(),
-      contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-      contractName: 'nft-auction',
-      functionName: 'create-auction',
-      functionArgs: ['1', '100'],
-      senderAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-    });
-
-    expect(result.success).toBe(true);
+    const balance = await provider.eval(
+      'fungible-token',
+      `(map-get balances {address: '${user1}})`,
+      deployer
+    );
+    expect(getTxResult(balance)).toEqual('(some {balance: u100})');
   });
 
-  it('should fail to create an auction for an unowned NFT', async () => {
-    const result = await callContractFunction({
-      network: mockProvider.getNetwork(),
-      contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-      contractName: 'nft-auction',
-      functionName: 'create-auction',
-      functionArgs: ['2', '100'],
-      senderAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-    });
+  it('should transfer tokens', async () => {
+    // Mint tokens to user1
+    await provider.eval(
+      'fungible-token',
+      `(mint-tokens '${user1} u100)`,
+      deployer
+    );
 
-    expect(result.success).toBe(false);
-    expect(result.error).toBe('u200');
+    // Transfer tokens from user1 to user2
+    const { result } = await provider.eval(
+      'fungible-token',
+      `(transfer-tokens '${user1} '${user2} u50)`,
+      user1
+    );
+    expect(getTxResult(result)).toEqual('(ok true)');
+
+    // Check balances
+    const user1Balance = await provider.eval(
+      'fungible-token',
+      `(map-get balances {address: '${user1}})`,
+      deployer
+    );
+    expect(getTxResult(user1Balance)).toEqual('(some {balance: u50})');
+
+    const user2Balance = await provider.eval(
+      'fungible-token',
+      `(map-get balances {address: '${user2}})`,
+      deployer
+    );
+    expect(getTxResult(user2Balance)).toEqual('(some {balance: u50})');
   });
 
-  it('should place a valid bid', async () => {
-    // First, create an auction
-    await cal
+  it('should fail to transfer tokens when balance is insufficient', async () => {
+    // Mint tokens to user1
+    await provider.eval(
+      'fungible-token',
+      `(mint-tokens '${user1} u100)`,
+      deployer
+    );
+
+    // Attempt to transfer more tokens than available
+    const { result } = await provider.eval(
+      'fungible-token',
+      `(transfer-tokens '${user1} '${user2} u150)`,
+      user1
+    );
+    expect(getTxResult(result)).toEqual('(err u101)');
+  });
+});
